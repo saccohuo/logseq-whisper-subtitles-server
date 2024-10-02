@@ -9,6 +9,9 @@ app = Flask(__name__)
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
     try:
+        print("Received transcribe request")
+        print(f"Request form data: {request.form}")
+        
         text = request.form['text'].strip()
         min_length = request.form.get('min_length', '')
         model_type = request.form.get('model_type', 'whisper')
@@ -20,9 +23,37 @@ def transcribe():
         ollama_model = request.form.get('ollama_model', 'qwen2.5:3b')
         ollama_endpoint = request.form.get('ollama_endpoint', 'http://localhost:11434')
         segment_model = request.form.get('segment_model', 'ollama')
-        openai_api_key = request.form.get('openai_api_key')
-        openai_model = request.form.get('openai_model')
-        openai_api_endpoint = request.form.get('openai_api_endpoint')
+        enable_openai_rotation = request.form.get('enable_openai_rotation', 'false').lower() == 'true'
+        use_shared_openai_api_key = request.form.get('use_shared_openai_api_key', 'false').lower() == 'true'
+        use_shared_openai_api_endpoint = request.form.get('use_shared_openai_api_endpoint', 'false').lower() == 'true'
+        
+        openai_api_keys = []
+        openai_models = []
+        openai_api_endpoints = []
+        
+        if use_shared_openai_api_key:
+            shared_api_key = request.form.get('shared_openai_api_key', '')
+            if shared_api_key:
+                openai_api_keys = [shared_api_key] * 5
+        else:
+            openai_api_keys = [request.form.get(f'openai_api_key{i}', '') for i in range(1, 6)]
+        
+        if use_shared_openai_api_endpoint:
+            shared_api_endpoint = request.form.get('shared_openai_api_endpoint', 'https://api.openai.com/v1')
+            openai_api_endpoints = [shared_api_endpoint] * 5
+        else:
+            openai_api_endpoints = [request.form.get(f'openai_api_endpoint{i}', 'https://api.openai.com/v1') for i in range(1, 6)]
+        
+        # 修改这里，确保使用客户端提供的模型名称
+        openai_models = [request.form.get(f'openai_model{i}', '') for i in range(1, 6)]
+        
+        openai_priority = request.form.get('openai_priority', '1,2,3,4,5').split(',')
+
+        print(f"OpenAI API Keys: {openai_api_keys}")
+        print(f"OpenAI Models: {openai_models}")
+        print(f"OpenAI API Endpoints: {openai_api_endpoints}")
+        print(f"OpenAI Priority: {openai_priority}")
+        print(f"Enable OpenAI Rotation: {enable_openai_rotation}")
 
         source = None
         audio_path = None
@@ -76,22 +107,33 @@ def transcribe():
                 f.write(text)
 
         # 直接执行转录
-        result = transcribe_audio(audio_path, min_length, model_type, model_size, zh_type, 
+        result, rotation_message = transcribe_audio(audio_path, min_length, model_type, model_size, zh_type, 
                                   funasr_model_name, funasr_model_source, 
                                   segment_model=segment_model,
                                   ollama_model=ollama_model, 
                                   ollama_endpoint=ollama_endpoint,
-                                  openai_api_key=openai_api_key,
-                                  openai_model=openai_model,
-                                  openai_api_endpoint=openai_api_endpoint)
+                                  openai_api_keys=openai_api_keys,
+                                  openai_models=openai_models,
+                                  openai_api_endpoints=openai_api_endpoints,
+                                  openai_priority=openai_priority,
+                                  enable_openai_rotation=enable_openai_rotation)
+        
+        print(f"Transcription result: {result}")
+        print(f"Rotation message: {rotation_message}")
 
-        return jsonify({
+        response = {
             "status": "completed",
             "source": source,
             "segments": result
-        })
+        }
+
+        if rotation_message:
+            response["openai_rotation_message"] = rotation_message
+
+        return jsonify(response)
 
     except Exception as e:
+        print(f"Error in transcribe function: {str(e)}")
         traceback.print_exc()
         return jsonify({
             "error": "logseq-whisper-subtitle-server error: " + str(e),
@@ -111,7 +153,7 @@ def get_available_ollama_models():
     models = get_ollama_models(ollama_endpoint)
     return jsonify(models)
 
-# 在服务器启动之前预加载模型
+# 在服务器启动之前加载模型
 preload_funasr_models()
 
 if __name__ == '__main__':

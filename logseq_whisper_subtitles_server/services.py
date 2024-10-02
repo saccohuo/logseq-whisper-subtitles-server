@@ -229,24 +229,48 @@ def split_text(text, max_length=1500):
         chunks.append(current_chunk)
     return chunks
 
-def segment_text_with_openai(text, max_length=100, api_key=None, model=None, api_endpoint=None, max_retries=3):
+def segment_text_with_openai(text, max_length=100, api_keys=None, models=None, api_endpoints=None, priority=None, enable_rotation=False):
     """
-    使用 OpenAI API 对文本进行分段，失败时最多重试3次
+    使用 OpenAI API 对文本进行分段，支持多组 API 设置和轮询
     """
-    if api_key is None:
-        raise ValueError("OpenAI API key is required")
+    print("Entering segment_text_with_openai function")
+    print(f"API Keys: {api_keys}")
+    print(f"Models: {models}")
+    print(f"API Endpoints: {api_endpoints}")
+    print(f"Priority: {priority}")
+    print(f"Enable Rotation: {enable_rotation}")
+    
+    if not api_keys or not models or not api_endpoints or not priority:
+        print("Warning: Some OpenAI API settings are missing.")
+        return [text], None  # 返回原始文本作为单个段落
 
-    client = OpenAI(api_key=api_key, base_url=api_endpoint)
+    # 创建一个优先级到字母的映射
+    priority_letters = {i: chr(65 + i) for i in range(5)}  # A, B, C, D, E
+    
+    # 创建一个优先级到索引的映射
+    priority_map = {int(p): i for i, p in enumerate(priority) }
+    
+    # 根据优先级排序 API 设置
+    valid_settings = list(zip(range(1, len(api_keys) + 1), api_keys, models, api_endpoints))
+    api_settings = sorted(valid_settings, key=lambda x: priority_map.get(x[0], len(priority)))
+    
+    print(f"Sorted API settings: {api_settings}")
 
     chunks = split_text(text)
     segmented_chunks = []
     total_chunks = len(chunks)
+    rotation_message = None
+
+    def clean_text(text):
+        # 移除时间戳和标点，只保留字母数字字符
+        return ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
 
     for i, chunk in enumerate(chunks, 1):
         print(f"Processing chunk {i}/{total_chunks} ({i/total_chunks*100:.2f}%)")
+        print(f"Original chunk: {chunk}")
         
         prompt = f"""
-        将以下文本分成多个段落，每个段落的长度大约为{max_length}个字。
+        将以下文本分成多个段落，每个段落的长度约为{max_length}个字。
         遵循以下规则：
         1. 保持原文的所有内容，绝对不要删除、增加或修改任何文字。
         2. 只在自然的句子边界进行分段。
@@ -260,9 +284,12 @@ def segment_text_with_openai(text, max_length=100, api_key=None, model=None, api
         {chunk}
         """
 
-        for attempt in range(max_retries):
+        success = False
+        for attempt, (setting_number, api_key, model, api_endpoint) in enumerate(api_settings, 1):
+            priority_letter = priority_letters[attempt - 1]  # A for first attempt, B for second, etc.
             try:
-                print(f"Sending request to OpenAI API for chunk {i}/{total_chunks} (Attempt {attempt + 1}/{max_retries})")
+                client = OpenAI(api_key=api_key, base_url=api_endpoint)
+                print(f"Attempt {attempt}: Sending request to OpenAI API (Priority: {priority_letter}, OpenAI Setting: {setting_number}, Endpoint: {api_endpoint}, Model: {model})")
                 response = client.chat.completions.create(
                     model=model,
                     messages=[
@@ -270,7 +297,7 @@ def segment_text_with_openai(text, max_length=100, api_key=None, model=None, api
                         {"role": "user", "content": prompt}
                     ]
                 )
-                print(f"Received response from OpenAI API for chunk {i}/{total_chunks}")
+                print(f"Received response from OpenAI API using model: {model}")
                 segmented_chunk = response.choices[0].message.content.strip()
                 
                 # 处理返回的文本，只保留段落开头的时间戳
@@ -284,34 +311,64 @@ def segment_text_with_openai(text, max_length=100, api_key=None, model=None, api
                     else:
                         processed_segments.append(segment)
                 
-                segmented_chunks.extend(processed_segments)
-                break  # 如果成功，跳出重试循环
-            except Exception as e:
-                print(f"OpenAI API 调用失败 for chunk {i}/{total_chunks} (Attempt {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(1)  # 在重试之前等待1秒
+                # 验证分段前后的文本是否完全一致（忽略时间戳和标点）
+                original_text_no_punct = clean_text(chunk)
+                segmented_text_no_punct = clean_text(''.join(processed_segments))
+                
+                print(f"Original text (cleaned): {original_text_no_punct}")
+                print(f"Segmented text (cleaned): {segmented_text_no_punct}")
+                print(f"Segmented text (with formatting):")
+                for seg in processed_segments:
+                    print(seg)
+                
+                if original_text_no_punct == segmented_text_no_punct:
+                    print(f"Chunk {i}: Segmentation successful, text content matches")
+                    segmented_chunks.extend(processed_segments)
+                    success = True
+                    rotation_message = f"Using OpenAI API setting {setting_number} (Priority {priority_letter}) with model {model}"
+                    break
                 else:
-                    print(f"All {max_retries} attempts failed for chunk {i}/{total_chunks}. Using original chunk.")
-                    segmented_chunks.append(chunk)  # 如果所有重试都失败，使用原始文本
+                    print(f"Chunk {i}: Warning - Segmented text does not match original text")
+                    if not enable_rotation:
+                        break
+                    print("Rotation enabled, trying next API setting")
+            except Exception as e:
+                print(f"Chunk {i}, Attempt {attempt}: OpenAI API 调用失败 (Priority: {priority_letter}, OpenAI Setting: {setting_number}, Endpoint: {api_endpoint}, Model: {model}): {str(e)}")
+                if not enable_rotation:
+                    break
+                print("Rotation enabled, trying next API setting")
 
-    # 验证分段前后的文本是否完全一致（忽略时间戳）
-    original_text = ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
-    segmented_text = ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', ''.join(segmented_chunks)) if char.isalnum())
+        if not success:
+            print(f"All API calls failed for chunk {i}/{total_chunks}. Using original chunk.")
+            segmented_chunks.append(chunk)
+
+    # 验证整体分段前后的文本是否完全一致（忽略时间戳和标点）
+    original_text = clean_text(text)
+    segmented_text = clean_text(''.join(segmented_chunks))
+    
+    print("Final comparison:")
+    print(f"Original text (full, cleaned): {original_text}")
+    print(f"Segmented text (full, cleaned): {segmented_text}")
     
     if original_text == segmented_text:
-        print("分段成功，文本内容完全一致")
-        return segmented_chunks
+        print("Overall segmentation successful, text content matches")
+        return segmented_chunks, rotation_message
     else:
-        print("警告：分段后的文本与原文本不一致")
-        print("原始文本（无标点和时间戳）:")
-        print(original_text)
-        print("分段后文本（无标点和时间戳）:")
-        print(segmented_text)
-        return [text]  # 如果不一致，返回原始文本作为单个段落
+        print("Warning: Overall segmented text does not match original text")
+        return [text], rotation_message  # 如果不一致，返回原始文本作为单个段落
 
-def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whisper", model_size=DEFAULT_MODEL_SIZE, zh_type='zh-cn', funasr_model_name=None, funasr_model_source=None, segment_model="ollama", ollama_model="qwen2.5:3b", ollama_endpoint="http://localhost:11434", openai_api_key=None, openai_model=None, openai_api_endpoint=None):
+def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whisper", model_size=DEFAULT_MODEL_SIZE, zh_type='zh-cn', funasr_model_name=None, funasr_model_source=None, segment_model="ollama", ollama_model="qwen2.5:3b", ollama_endpoint="http://localhost:11434", openai_api_keys=None, openai_models=None, openai_api_endpoints=None, openai_priority=None, enable_openai_rotation=False):
     """Transcribe audio file
     转录音频文件"""
+    print("Entering transcribe_audio function")
+    print(f"Model Type: {model_type}")
+    print(f"Segment Model: {segment_model}")
+    print(f"OpenAI API Keys: {openai_api_keys}")
+    print(f"OpenAI Models: {openai_models}")
+    print(f"OpenAI API Endpoints: {openai_api_endpoints}")
+    print(f"OpenAI Priority: {openai_priority}")
+    print(f"Enable OpenAI Rotation: {enable_openai_rotation}")
+    
     if not min_length:
         min_length = DEFAULT_MIN_LENGTH
 
@@ -345,7 +402,7 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
                 "start": start_time,
                 "text": text
             })
-        return res
+        return res, None  # 返回结果和 None 作为 rotation_message
 
     elif model_type == "funasr":
         print(f"Using FunASR model: {funasr_model_name}")
@@ -380,12 +437,11 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
         print(full_text_without_timestamp)
         
         # 使用选定的模型进行分段
-        if segment_model == "ollama":
-            segments = segment_text_with_ollama(full_text_with_timestamp, model=ollama_model, ollama_endpoint=ollama_endpoint)
-        elif segment_model == "openai":
-            segments = segment_text_with_openai(full_text_with_timestamp, api_key=openai_api_key, model=openai_model, api_endpoint=openai_api_endpoint)
+        if segment_model == "openai":
+            segments, rotation_message = segment_text_with_openai(full_text_with_timestamp, api_keys=openai_api_keys, models=openai_models, api_endpoints=openai_api_endpoints, priority=openai_priority, enable_rotation=enable_openai_rotation)
         else:
-            raise ValueError(f"Unsupported segment model: {segment_model}")
+            segments = segment_text_with_ollama(full_text_with_timestamp, model=ollama_model, ollama_endpoint=ollama_endpoint)
+            rotation_message = None
         
         # 处理分段后的文本，提取时间戳
         result = []
@@ -402,14 +458,18 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
             else:
                 print(f"Warning: Could not find timestamp for segment: {segment}")
         
-        # 验证分段前后的文本是否一致
-        segmented_text = ' '.join([item['text'] for item in result])
-        if full_text_without_timestamp.strip() != segmented_text.strip():
-            print("警告：分段后的文本与原文本不一致")
-            print("原始文本:")
-            print(full_text_without_timestamp)
-            print("分段后文本:")
-            print(segmented_text)
+        # 验证分段前后的文本是否一致（忽略时间戳和标点）
+        def clean_text(text):
+            return ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
+
+        original_text = clean_text(full_text_without_timestamp)
+        segmented_text = clean_text(''.join([item['text'] for item in result]))
+        
+        if original_text != segmented_text:
+            print("Warning: Segmented text does not match original text")
+            print("Original text (cleaned):", original_text)
+            print("Segmented text (cleaned):", segmented_text)
+            print("Using original text without segmentation")
             # 如果不一致，使用原始文本
             result = []
             for line in full_text_with_timestamp.split('\n'):
@@ -427,7 +487,7 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
         for item in result:
             print(f"{{{{timestamp {item['start']}}}}} {item['text']}")
         
-        return result
+        return result, rotation_message
 
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
