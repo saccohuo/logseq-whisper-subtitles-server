@@ -26,7 +26,7 @@ def transcribe():
         enable_openai_rotation = request.form.get('enable_openai_rotation', 'false').lower() == 'true'
         use_shared_openai_api_key = request.form.get('use_shared_openai_api_key', 'false').lower() == 'true'
         use_shared_openai_api_endpoint = request.form.get('use_shared_openai_api_endpoint', 'false').lower() == 'true'
-        perform_segmentation = request.form.get('perform_segmentation', 'No')
+        perform_segmentation = request.form.get('perform_segmentation', 'false').lower() == 'true'
         
         openai_api_keys = []
         openai_models = []

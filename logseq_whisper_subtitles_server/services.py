@@ -357,7 +357,7 @@ def clean_text(text):
     # 移除时间戳和标点，只保留字母数字字符
     return ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
 
-def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whisper", model_size=DEFAULT_MODEL_SIZE, zh_type='zh-cn', funasr_model_name=None, funasr_model_source=None, segment_model="ollama", ollama_model="qwen2.5:3b", ollama_endpoint="http://localhost:11434", openai_api_keys=None, openai_models=None, openai_api_endpoints=None, openai_priority=None, enable_openai_rotation=False, perform_segmentation="No"):
+def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whisper", model_size=DEFAULT_MODEL_SIZE, zh_type='zh-cn', funasr_model_name=None, funasr_model_source=None, segment_model="ollama", ollama_model="qwen2.5:3b", ollama_endpoint="http://localhost:11434", openai_api_keys=None, openai_models=None, openai_api_endpoints=None, openai_priority=None, enable_openai_rotation=False, perform_segmentation=False):
     """Transcribe audio file
     转录音频文件"""
     print("Entering transcribe_audio function")
@@ -409,7 +409,7 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
         print("完整转录文本（不带时间戳）:")
         print(full_text_without_timestamp)
         
-        if perform_segmentation == "Yes":
+        if perform_segmentation:
             print("Performing segmentation...")
             if segment_model == "openai":
                 print("Using OpenAI for segmentation")
@@ -439,7 +439,12 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
                             "text": text
                         })
                 else:
-                    print(f"Warning: Could not find timestamp for segment: {segment}")
+                    if segment:
+                        print(f"Warning: Could not find timestamp for segment: {segment}")
+                        if result:
+                            result[-1]['text'] += segment.strip()
+                        else:
+                            print(f"Warning: Empty segment received: {segment}")
         else:
             print("Skipping segmentation as per settings")
             # 不进行分段，直接使用原始转录结果
@@ -511,7 +516,7 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
         print("完整转录文本（不带时间戳）:")
         print(full_text_without_timestamp)
         
-        if perform_segmentation == "Yes":
+        if perform_segmentation:
             print("Performing segmentation...")
             if segment_model == "openai":
                 print("Using OpenAI for segmentation")
@@ -541,7 +546,12 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
                             "text": text
                         })
                 else:
-                    print(f"Warning: Could not find timestamp for segment: {segment}")
+                    if segment:
+                        print(f"Warning: Could not find timestamp for segment: {segment}")
+                        if result:
+                            result[-1]['text'] += segment.strip()
+                        else:
+                            print(f"Warning: Empty segment received: {segment}")
         else:
             print("Skipping segmentation as per settings")
             # 不进行分段，直接使用原始转录结果
