@@ -1,3 +1,8 @@
 Flask
 openai-whisper
-pytube
+yt-dlp
+funasr
+addict
+huggingface_hub
+requests
+openai>=1.0.0
