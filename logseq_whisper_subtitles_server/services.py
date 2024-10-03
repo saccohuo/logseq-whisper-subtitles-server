@@ -50,6 +50,13 @@ print(f"Model device: {next(whisper_models[DEFAULT_MODEL_SIZE].parameters()).dev
 # 添加一个字典来缓存已加载的 FunASR 模型
 funasr_models = {}
 
+# 在文件顶部添加这个函数
+def clean_text(text):
+    """
+    移除时间戳和标点，只保留字母数字字符
+    """
+    return ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
+
 def load_funasr_model(model_name, model_source):
     """Load FunASR model
     加载 FunASR 模型"""
@@ -149,7 +156,7 @@ def replace_punctuation(text):
     text = text.replace(",", "，").replace(".", "。").replace("?", "？").replace("!", "！")
     return text
 
-def segment_text_with_ollama(text, model="qwen2.5:3b", max_length=100, ollama_endpoint="http://localhost:11434"):
+def segment_text_with_ollama(text, model="qwen2.5:3b", max_length=1500, ollama_endpoint="http://localhost:11434"):
     """
     使用 Ollama 的模型对文本进行分段
     """
@@ -199,7 +206,7 @@ def segment_text_with_ollama(text, model="qwen2.5:3b", max_length=100, ollama_en
         print(f"错误信息: {response.text}")
         return [text]  # 如果 API 调用失败，返回原始文本作为单个段落
 
-def split_text(text, max_length=1500):
+def split_text(text, max_length):
     """
     将长文本切割成不超过指定长度的片段，在时间戳之前进行分割
     """
@@ -226,14 +233,16 @@ def split_text(text, max_length=1500):
 
     return result
 
-def segment_text_with_openai(text, max_length=100, api_keys=None, models=None, api_endpoints=None, priority=None, enable_rotation=False):
+def segment_text_with_openai(text, max_length, api_keys=None, models=None, api_endpoints=None, priority=None, enable_rotation=False, segmentation_tolerance=5, segmentation_tolerance_unit="percent", max_segment_lengths=None):
     print("Entering segment_text_with_openai function")
     print(f"API Keys: {api_keys}")
     print(f"Models: {models}")
     print(f"API Endpoints: {api_endpoints}")
     print(f"Priority: {priority}")
     print(f"Enable Rotation: {enable_rotation}")
-    print(f"Original text (first 100 chars): {text[:100]}...")
+    print(f"Default Max Length: {max_length}")
+    print(f"Max Segment Lengths: {max_segment_lengths}")  # 添加这行来打印 max_segment_lengths
+    print(f"Original full text: {text}")
     
     if not api_keys or not models or not api_endpoints or not priority:
         print("Warning: Some OpenAI API settings are missing.")
@@ -242,7 +251,7 @@ def segment_text_with_openai(text, max_length=100, api_keys=None, models=None, a
     # 创建一个优先级到字母的映射
     priority_letters = {i: chr(65 + i) for i in range(5)}  # A, B, C, D, E
     
-    # 创建一个优先级到索引的映射
+    # 创建一个优先到索引的映射
     priority_map = {int(p): i for i, p in enumerate(priority)}
     
     # 根据优先级排序 API 设置
@@ -251,34 +260,45 @@ def segment_text_with_openai(text, max_length=100, api_keys=None, models=None, a
     
     print(f"Sorted API settings: {api_settings}")
 
-    chunks = split_text(text)
-    print(f"chunks: {chunks}")
+    chunks = split_text(text, max_length)
+    print(f"Number of chunks after splitting: {len(chunks)}")
     segmented_chunks = []
     total_chunks = len(chunks)
-    print(f"total_chunks: {total_chunks}")
     rotation_message = None
 
+    def is_segmentation_acceptable(original, segmented, tolerance, unit):
+        original_length = len(original)
+        segmented_length = len(segmented)
+        if unit == "percent":
+            difference_percent = abs(original_length - segmented_length) / original_length * 100
+            return difference_percent <= tolerance, difference_percent
+        else:  # characters
+            difference_chars = abs(original_length - segmented_length)
+            return difference_chars <= tolerance, difference_chars
+
     for i, chunk in enumerate(chunks, 1):
-        print(f"truetruetrue")
-        print(f"Processing chunk {i}/{total_chunks} ({i/total_chunks*100:.2f}%)")
+        print(f"\nProcessing chunk {i}/{total_chunks}")
+        print(f"Original chunk text: {chunk}")
         
-        prompt = f"""
-        将以下文本分成多个段落，每个段落的长度约为{max_length}个字。
-        遵循以下规则：
-        1. 保持原文的所有内容，绝对不要删除、增加或修改任何文字。
-        2. 只在自然的句子边界进行分段。
-        3. 确保每个段落的意思是完整的。
-        4. 直接返回分段后的文本，每个段落用一个换行符分隔。
-        5. 不要添加任何额外的解释、编号或标记。
-        6. 分段前后的标点符号可以不同，但文字必须完全一致，不允许有任何差异。
-        7. 保留每个段落开头的时间戳标记（形如 {{{{timestamp 123}}}}），但删除段落中间的时间戳标记。
-
-        原文本：
-        {chunk}
-        """
-
-        success = False
         for attempt, (setting_number, api_key, model, api_endpoint) in enumerate(api_settings, 1):
+            current_max_length = max_segment_lengths[setting_number - 1] if max_segment_lengths and setting_number <= len(max_segment_lengths) and max_segment_lengths[setting_number - 1] > 0 else max_length
+            print(f"Using max length for setting {setting_number}: {current_max_length}")  # 添加这行来打印每次使用的 max_length
+            prompt = f"""
+            将以下文本分成多个段落，每个段落的长度约为{current_max_length}个字。
+            遵循以下规则：
+            1. 保持原文的所有内容，绝对不要删除、增加或修改任何文字。
+            2. 只在自然的句子边界进行分段。
+            3. 确保每个段落的意思是完整的。
+            4. 直接返回分段后的文本，每个段落用一个换行符分隔。
+            5. 不要添加任何额外的解释、编号或标记。
+            6. 分段前后的标点符号可以不同，但文字必须完全一致，不允许有任何差异。
+            7. 保留每个段落开头的时间戳标记（形如 {{{{timestamp 123}}}}），但删除段落中间的时间戳标记。
+
+            原文本：
+            {chunk}
+            """
+
+            success = False
             priority_letter = priority_letters[attempt - 1]
             print(f"Attempt {attempt}: Sending request to OpenAI API (Priority: {priority_letter}, OpenAI Setting: {setting_number}, Endpoint: {api_endpoint}, Model: {model})")
             
@@ -305,25 +325,23 @@ def segment_text_with_openai(text, max_length=100, api_keys=None, models=None, a
                     else:
                         processed_segments.append(segment)
                 
-                # 验证分段前后的文本是否完全一致（忽略时间戳和标点）
+                print(f"Segmented chunk text: {processed_segments}")
+                
                 original_text_no_punct = clean_text(chunk)
                 segmented_text_no_punct = clean_text(''.join(processed_segments))
                 
-                print(f"Original text (cleaned): {original_text_no_punct[:100]}...")
-                print(f"Segmented text (cleaned): {segmented_text_no_punct[:100]}...")
-                print(f"Segmented text (with formatting):")
-                for seg in processed_segments:
-                    print(seg[:100] + "...")
+                is_acceptable, difference = is_segmentation_acceptable(original_text_no_punct, segmented_text_no_punct, segmentation_tolerance, segmentation_tolerance_unit)
                 
-                if original_text_no_punct == segmented_text_no_punct:
-                    print(f"Chunk {i}: Segmentation successful, text content matches")
+                if is_acceptable:
+                    print(f"Chunk {i}: Segmentation successful, within tolerance")
+                    print(f"Difference: {difference} {'%' if segmentation_tolerance_unit == 'percent' else 'characters'}")
                     segmented_chunks.extend(processed_segments)
                     success = True
                     rotation_message = f"Using OpenAI API setting {setting_number} (Priority {priority_letter}) with model {model}"
                     break
                 else:
-                    print(f"Chunk {i}: Warning - Segmented text does not match original text")
-                    print(f"Length difference: {len(original_text_no_punct) - len(segmented_text_no_punct)}")
+                    print(f"Chunk {i}: Warning - Segmented text difference exceeds tolerance")
+                    print(f"Difference: {difference} {'%' if segmentation_tolerance_unit == 'percent' else 'characters'}")
                     if not enable_rotation:
                         break
                     print("Rotation enabled, trying next API setting")
@@ -334,30 +352,125 @@ def segment_text_with_openai(text, max_length=100, api_keys=None, models=None, a
                 print("Rotation enabled, trying next API setting")
 
         if not success:
-            print(f"All API calls failed for chunk {i}/{total_chunks}. Using original chunk.")
+            print(f"All API calls failed or exceeded tolerance for chunk {i}/{total_chunks}. Using original chunk.")
             segmented_chunks.append(chunk)
 
-    # 验证整体分段前后的文本是否完全一致（忽略时间戳和标点）
+    # 用于日志显的整体比较
     original_text = clean_text(text)
     segmented_text = clean_text(''.join(segmented_chunks))
     
-    print("Final comparison:")
-    print(f"Original text (full, cleaned): {original_text[:100]}...")
-    print(f"Segmented text (full, cleaned): {segmented_text[:100]}...")
-    print(f"Length difference: {len(original_text) - len(segmented_text)}")
+    is_overall_acceptable, overall_difference = is_segmentation_acceptable(original_text, segmented_text, segmentation_tolerance, segmentation_tolerance_unit)
     
-    if original_text == segmented_text:
-        print("Overall segmentation successful, text content matches")
-        return segmented_chunks, rotation_message
+    print("\nFinal comparison (for logging purposes only):")
+    print(f"Original full text length: {len(original_text)}")
+    print(f"Segmented full text length: {len(segmented_text)}")
+    print(f"Overall difference: {overall_difference} {'%' if segmentation_tolerance_unit == 'percent' else 'characters'}")
+    print(f"Overall segmentation {'within' if is_overall_acceptable else 'exceeds'} tolerance")
+
+    return segmented_chunks, rotation_message
+
+def process_transcription(audio_path, transcribe_func, post_process_func=None, **kwargs):
+    """
+    通用的转录处理函数
+    
+    :param audio_path: 音频文件路径
+    :param transcribe_func: 转录函数（Whisper 或 FunASR）
+    :param post_process_func: 后处理函数（可选）
+    :param kwargs: 其他参数
+    :return: 处理后的转录结果
+    """
+    print(f"Processing audio file: {audio_path}")
+    
+    # 执行转录
+    transcription = transcribe_func(audio_path, **kwargs)
+    
+    # 如果有后处理函数，执行后处理
+    if post_process_func:
+        transcription = post_process_func(transcription)
+    
+    # 处理结果
+    result = []
+    if isinstance(transcription, dict) and 'segments' in transcription:
+        # Whisper 格式
+        for segment in transcription['segments']:
+            start_time = int(segment['start'])
+            text = segment['text'].strip()
+            if text:
+                result.append({
+                    "start": start_time,
+                    "text": text
+                })
     else:
-        print("Warning: Overall segmented text does not match original text")
-        return [text], rotation_message  # 如果不一致，返回原始文本作为单个段落
+        # FunASR 格式
+        for segment in transcription:
+            if isinstance(segment, dict):
+                if 'sentence_info' in segment:
+                    # 处理包含 sentence_info 的情况
+                    for sentence in segment['sentence_info']:
+                        start_time_seconds = int(float(sentence.get("start", 0)) / 1000)  # 转换为秒
+                        text = sentence["text"].strip()
+                        if text:
+                            result.append({
+                                "start": start_time_seconds,
+                                "text": text
+                            })
+                elif 'text' in segment:
+                    # 处理直接包含 text 的情况
+                    start_time_seconds = int(float(segment.get("start", 0)) / 1000)  # 转换为秒
+                    text = segment["text"].strip()
+                    if text:
+                        result.append({
+                            "start": start_time_seconds,
+                            "text": text
+                        })
+            elif isinstance(segment, str):
+                # 如果 segment 是字符串，假设它是纯文本，没有时间戳
+                result.append({
+                    "start": 0,  # 默认开始时间为0
+                    "text": segment.strip()
+                })
+    
+    return result
 
-def clean_text(text):
-    # 移除时间戳和标点，只保留字母数字字符
-    return ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
+def whisper_transcribe(audio_path, model, **kwargs):
+    """
+    Whisper 转录函数
+    """
+    print(f"Transcribing with Whisper model: {model}")
+    transcribe = model.transcribe(audio=audio_path, **kwargs)
+    return transcribe
 
-def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whisper", model_size=DEFAULT_MODEL_SIZE, zh_type='zh-cn', funasr_model_name=None, funasr_model_source=None, segment_model="ollama", ollama_model="qwen2.5:3b", ollama_endpoint="http://localhost:11434", openai_api_keys=None, openai_models=None, openai_api_endpoints=None, openai_priority=None, enable_openai_rotation=False, perform_segmentation=False):
+def funasr_transcribe(audio_path, model, hotword_file_path='', hotwords='', **kwargs):
+    """
+    FunASR 转录函数
+    """
+    print(f"Transcribing with FunASR model: {model}")
+    
+    # 处理热词
+    hotword_list = []
+    if hotword_file_path:
+        try:
+            with open(hotword_file_path, 'r', encoding='utf-8') as f:
+                hotword_list.extend(f.read().splitlines())
+        except Exception as e:
+            print(f"Error reading hotword file: {str(e)}")
+    
+    if hotwords:
+        hotword_list.extend(hotwords.split(','))
+    
+    hotword_list = list(set(hotword_list))  # 去重
+    
+    if hotword_list:
+        print(f"Using hotwords: {hotword_list}")
+        kwargs['hotword'] = ' '.join(hotword_list)  # 将热词列表转换为空格分隔的字符串
+    
+    print(f"FunASR generate kwargs: {kwargs}")  # 添加这行来打印所有参数
+    res = model.generate(input=audio_path, **kwargs)
+    # print(f"FunASR transcription result: {res}")  # 添加这行来打印原始结果
+    return res
+
+# 修改 transcribe_audio 函数
+def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whisper", model_size=DEFAULT_MODEL_SIZE, zh_type='zh-cn', funasr_model_name=None, funasr_model_source=None, segment_model="ollama", ollama_model="qwen2.5:3b", ollama_endpoint="http://localhost:11434", openai_api_keys=None, openai_models=None, openai_api_endpoints=None, openai_priority=None, enable_openai_rotation=False, perform_segmentation=False, default_max_segment_length=1500, ollama_max_segment_length=0, openai_max_segment_lengths=None, segmentation_tolerance=5, segmentation_tolerance_unit="percent", hotword_file_path='', hotwords=''):
     """Transcribe audio file
     转录音频文件"""
     print("Entering transcribe_audio function")
@@ -369,7 +482,7 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
     print(f"OpenAI API Endpoints: {openai_api_endpoints}")
     print(f"OpenAI Priority: {openai_priority}")
     print(f"Enable OpenAI Rotation: {enable_openai_rotation}")
-    
+
     if not min_length:
         min_length = DEFAULT_MIN_LENGTH
 
@@ -386,229 +499,93 @@ def transcribe_audio(audio_path, min_length=DEFAULT_MIN_LENGTH, model_type="whis
         print("Using Whisper model: ", model_size)
         print(f"Model device: {next(model.parameters()).device}")
 
+        kwargs = {
+            'verbose': True,
+            'fp16': (device=="cuda")
+        }
         if zh_type.strip() == 'zh-cn':
             print("Transcribing Chinese simplified audio ...")
-            transcribe = model.transcribe(audio=audio_path, verbose=True, initial_prompt="对于普通话句子，以中文简体输出", fp16=(device=="cuda"))
-        else:
-            transcribe = model.transcribe(audio=audio_path, verbose=True, fp16=(device=="cuda"))
+            kwargs['initial_prompt'] = "对于普通话句子，以中文简体输出"
 
-        segments = transcribe['segments']
-        detect_language = transcribe.get('language', '')
-
-        full_text_with_timestamp = ""
-        full_text_without_timestamp = ""
-        
-        for segment in segments:
-            start_time_seconds = int(float(segment['start']))
-            text = segment['text'].strip()
-            full_text_with_timestamp += f"{{{{timestamp {start_time_seconds}}}}} {text}\n"
-            full_text_without_timestamp += f"{text}\n"
-        
-        print("完整转录文本（带时间戳）:")
-        print(full_text_with_timestamp)
-        print("完整转录文本（不带时间戳）:")
-        print(full_text_without_timestamp)
-        
-        if perform_segmentation:
-            print("Performing segmentation...")
-            if segment_model == "openai":
-                print("Using OpenAI for segmentation")
-                segments, rotation_message = segment_text_with_openai(
-                    full_text_with_timestamp, 
-                    api_keys=openai_api_keys, 
-                    models=openai_models, 
-                    api_endpoints=openai_api_endpoints, 
-                    priority=openai_priority, 
-                    enable_rotation=enable_openai_rotation
-                )
-            else:
-                print("Using Ollama for segmentation")
-                segments = segment_text_with_ollama(full_text_with_timestamp, model=ollama_model, ollama_endpoint=ollama_endpoint)
-                rotation_message = None
-            
-            # 处理分段后的文本，提取时间戳
-            result = []
-            for segment in segments:
-                match = re.match(r'\{\{timestamp (\d+)\}\} (.+)', segment.strip())
-                if match:
-                    start_time = int(match.group(1))
-                    text = match.group(2).strip()
-                    if text:  # 只有当文本非空时才添加到结果中
-                        result.append({
-                            "start": start_time,
-                            "text": text
-                        })
-                else:
-                    if segment:
-                        print(f"Warning: Could not find timestamp for segment: {segment}")
-                        if result:
-                            result[-1]['text'] += segment.strip()
-                        else:
-                            print(f"Warning: Empty segment received: {segment}")
-        else:
-            print("Skipping segmentation as per settings")
-            # 不进行分段，直接使用原始转录结果
-            result = [{"start": int(segment['start']), "text": segment['text'].strip()} for segment in segments if segment['text'].strip()]
-            rotation_message = None
-        
-        # 验证分段前后的文本是否一致（忽略时间戳和标点）
-        def clean_text(text):
-            return ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
-
-        original_text = clean_text(full_text_without_timestamp)
-        segmented_text = clean_text(''.join([item['text'] for item in result]))
-        
-        if original_text != segmented_text:
-            print("Warning: Segmented text does not match original text")
-            print("Original text (cleaned):", original_text)
-            print("Segmented text (cleaned):", segmented_text)
-            print("Using original text without segmentation")
-            # 如果不一致，使用原始文本
-            result = []
-            for line in full_text_with_timestamp.split('\n'):
-                match = re.match(r'\{\{timestamp (\d+)\}\} (.+)', line.strip())
-                if match:
-                    start_time = int(match.group(1))
-                    text = match.group(2).strip()
-                    if text:
-                        result.append({
-                            "start": start_time,
-                            "text": text
-                        })
-        
-        print("最终分段结果:")
-        for item in result:
-            print(f"{{{{timestamp {item['start']}}}}} {item['text']}")
-        
-        print(f"Transcription completed. Perform Segmentation: {perform_segmentation}")
-        
-        return result, rotation_message
+        result = process_transcription(audio_path, whisper_transcribe, model=model, **kwargs)
 
     elif model_type == "funasr":
-        print(f"Using FunASR model: {funasr_model_name}")
-        model = load_funasr_model(funasr_model_name, funasr_model_source)
-        res = model.generate(
-            input=audio_path,
-            batch_size_s=300,
-        )
-        
-        print("FunASR 生成结果:")
-        # print(json.dumps(res, indent=2, ensure_ascii=False))
-        
-        full_text_with_timestamp = ""
-        full_text_without_timestamp = ""
-        
-        for seg in res:
-            if 'sentence_info' in seg:
-                for sentence in seg['sentence_info']:
-                    start_time_seconds = int(sentence["start"] / 1000)  # 将毫秒转换为整数秒
-                    text = rich_transcription_postprocess(sentence["text"])
-                    full_text_with_timestamp += f"{{{{timestamp {start_time_seconds}}}}} {text}\n"
-                    full_text_without_timestamp += f"{text}\n"
-            else:
-                start_time_seconds = int(float(seg.get("start", 0)) / 1000)  # 将毫秒转换为整数秒
-                text = rich_transcription_postprocess(seg["text"])
-                full_text_with_timestamp += f"{{{{timestamp {start_time_seconds}}}}} {text}\n"
-                full_text_without_timestamp += f"{text}\n"
-        
-        print("完整转录文本（带时间戳）:")
-        print(full_text_with_timestamp)
-        print("完整转录文本（不带时间戳）:")
-        print(full_text_without_timestamp)
-        
-        if perform_segmentation:
-            print("Performing segmentation...")
-            if segment_model == "openai":
-                print("Using OpenAI for segmentation")
-                segments, rotation_message = segment_text_with_openai(
-                    full_text_with_timestamp, 
-                    api_keys=openai_api_keys, 
-                    models=openai_models, 
-                    api_endpoints=openai_api_endpoints, 
-                    priority=openai_priority, 
-                    enable_rotation=enable_openai_rotation
-                )
-            else:
-                print("Using Ollama for segmentation")
-                segments = segment_text_with_ollama(full_text_with_timestamp, model=ollama_model, ollama_endpoint=ollama_endpoint)
-                rotation_message = None
-            
-            # 处理分段后的文本，提取时间戳
-            result = []
-            for segment in segments:
-                match = re.match(r'\{\{timestamp (\d+)\}\} (.+)', segment.strip())
-                if match:
-                    start_time = int(match.group(1))
-                    text = match.group(2).strip()
-                    if text:  # 只有当文本非空时才添加到结果中
-                        result.append({
-                            "start": start_time,
-                            "text": text
-                        })
-                else:
-                    if segment:
-                        print(f"Warning: Could not find timestamp for segment: {segment}")
-                        if result:
-                            result[-1]['text'] += segment.strip()
-                        else:
-                            print(f"Warning: Empty segment received: {segment}")
-        else:
-            print("Skipping segmentation as per settings")
-            # 不进行分段，直接使用原始转录结果
-            result = []
-            for seg in res:
-                if 'sentence_info' in seg:
-                    for sentence in seg['sentence_info']:
-                        start_time_seconds = int(sentence["start"] / 1000)
-                        text = rich_transcription_postprocess(sentence["text"])
-                        result.append({
-                            "start": start_time_seconds,
-                            "text": text
-                        })
-                else:
-                    start_time_seconds = int(float(seg.get("start", 0)) / 1000)
-                    text = rich_transcription_postprocess(seg["text"])
-                    result.append({
-                        "start": start_time_seconds,
-                        "text": text
-                    })
-            rotation_message = None
-        
-        # 验证分段前后的文本是否一致（忽略时间戳和标点）
-        def clean_text(text):
-            return ''.join(char for char in re.sub(r'\{\{timestamp \d+\}\}', '', text) if char.isalnum())
+        if not funasr_model_name:
+            funasr_model_name = "paraformer-zh"
+        if not funasr_model_source:
+            funasr_model_source = "modelscope"
 
-        original_text = clean_text(full_text_without_timestamp)
-        segmented_text = clean_text(''.join([item['text'] for item in result]))
-        
-        if original_text != segmented_text:
-            print("Warning: Segmented text does not match original text")
-            print("Original text (cleaned):", original_text)
-            print("Segmented text (cleaned):", segmented_text)
-            print("Using original text without segmentation")
-            # 如果不一致，使用原始文本
-            result = []
-            for line in full_text_with_timestamp.split('\n'):
-                match = re.match(r'\{\{timestamp (\d+)\}\} (.+)', line.strip())
-                if match:
-                    start_time = int(match.group(1))
-                    text = match.group(2).strip()
-                    if text:
-                        result.append({
-                            "start": start_time,
-                            "text": text
-                        })
-        
-        print("最终分段结果:")
-        for item in result:
-            print(f"{{{{timestamp {item['start']}}}}} {item['text']}")
-        
-        print(f"Transcription completed. Perform Segmentation: {perform_segmentation}")
-        
-        return result, rotation_message
+        funasr_model = load_funasr_model(funasr_model_name, funasr_model_source)
+        result = process_transcription(audio_path, funasr_transcribe, model=funasr_model, hotword_file_path=hotword_file_path, hotwords=hotwords)
 
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
+
+    full_text_with_timestamp = ""
+    full_text_without_timestamp = ""
+    
+    for segment in result:
+        start_time_seconds = segment['start']
+        text = segment['text']
+        full_text_with_timestamp += f"{{{{timestamp {start_time_seconds}}}}} {text}\n"
+        full_text_without_timestamp += f"{text}\n"
+    
+    print("完整转录文本（带时间戳）:")
+    print(full_text_with_timestamp)
+    print("完整转录文本（不带时间戳）:")
+    print(full_text_without_timestamp)
+    
+    if perform_segmentation:
+        print("Performing segmentation...")
+        if segment_model == "openai":
+            print("Using OpenAI for segmentation")
+            segments, rotation_message = segment_text_with_openai(
+                full_text_with_timestamp, 
+                max_length=default_max_segment_length,
+                api_keys=openai_api_keys, 
+                models=openai_models, 
+                api_endpoints=openai_api_endpoints, 
+                priority=openai_priority, 
+                enable_rotation=enable_openai_rotation,
+                segmentation_tolerance=segmentation_tolerance,
+                segmentation_tolerance_unit=segmentation_tolerance_unit,
+                max_segment_lengths=openai_max_segment_lengths
+            )
+        else:
+            print("Using Ollama for segmentation")
+            ollama_length = ollama_max_segment_length if ollama_max_segment_length > 0 else default_max_segment_length
+            segments = segment_text_with_ollama(full_text_with_timestamp, model=ollama_model, ollama_endpoint=ollama_endpoint, max_length=ollama_length)
+            rotation_message = None
+        
+        # 处理分段后的文本，提取时间戳
+        result = []
+        for segment in segments:
+            match = re.match(r'\{\{timestamp (\d+)\}\} (.+)', segment.strip())
+            if match:
+                start_time = int(match.group(1))
+                text = match.group(2).strip()
+                if text:  # 只有当文本非空时才添加到结果中
+                    result.append({
+                        "start": start_time,
+                        "text": text
+                    })
+            else:
+                if segment:
+                    print(f"Warning: Could not find timestamp for segment: {segment}")
+                    if result:
+                        result[-1]['text'] += segment.strip()
+                        print(f"So add the segment to the last item: {result[-1]['text']}")
+                    else:
+                        print(f"Warning: The result is empty, but received: {segment}")
+    else:
+        print("Skipping segmentation as per settings")
+        rotation_message = None
+
+    print("最终分段结果:")
+    for item in result:
+        print(f"{{{{timestamp {item['start']}}}}} {item['text']}")
+    
+    return result, rotation_message
 
 # 新增函数：获取可用的 Ollama 模型
 def get_ollama_models(ollama_endpoint="http://localhost:11434"):

@@ -27,7 +27,12 @@ def transcribe():
         use_shared_openai_api_key = request.form.get('use_shared_openai_api_key', 'false').lower() == 'true'
         use_shared_openai_api_endpoint = request.form.get('use_shared_openai_api_endpoint', 'false').lower() == 'true'
         perform_segmentation = request.form.get('perform_segmentation', 'false').lower() == 'true'
-        
+        max_segment_length = int(request.form.get('max_segment_length', 1500))
+        segmentation_tolerance = float(request.form.get('segmentation_tolerance', 5))
+        segmentation_tolerance_unit = request.form.get('segmentation_tolerance_unit', 'percent')
+        hotword_file_path = request.form.get('hotword_file_path', '')
+        hotwords = request.form.get('hotwords', '')
+
         openai_api_keys = []
         openai_models = []
         openai_api_endpoints = []
@@ -55,6 +60,12 @@ def transcribe():
         print(f"OpenAI API Endpoints: {openai_api_endpoints}")
         print(f"OpenAI Priority: {openai_priority}")
         print(f"Enable OpenAI Rotation: {enable_openai_rotation}")
+
+        default_max_segment_length = int(request.form.get('default_max_segment_length', 1500))
+        ollama_max_segment_length = int(request.form.get('ollama_max_segment_length', 0))
+        openai_max_segment_lengths = [int(request.form.get(f'openai_max_segment_length{i}', 0)) for i in range(1, 6)]
+
+        print(f"OpenAI max segment lengths: {openai_max_segment_lengths}")  # 添加这行
 
         source = None
         audio_path = None
@@ -118,7 +129,14 @@ def transcribe():
                                   openai_api_endpoints=openai_api_endpoints,
                                   openai_priority=openai_priority,
                                   enable_openai_rotation=enable_openai_rotation,
-                                  perform_segmentation=perform_segmentation)
+                                  perform_segmentation=perform_segmentation,
+                                  default_max_segment_length=default_max_segment_length,
+                                  ollama_max_segment_length=ollama_max_segment_length,
+                                  openai_max_segment_lengths=openai_max_segment_lengths,
+                                  segmentation_tolerance=segmentation_tolerance,
+                                  segmentation_tolerance_unit=segmentation_tolerance_unit,
+                                  hotword_file_path=hotword_file_path,
+                                  hotwords=hotwords)
         
         print(f"Transcription result: {result}")
         print(f"Rotation message: {rotation_message}")
