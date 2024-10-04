@@ -742,7 +742,7 @@ def summarize_text(text, api_setting_priority, **kwargs):
 
 The transcript is <transcript>{text}</transcript>.
 
-Provide the output with the following template with Chinese.
+Provide the output with the following template with Simplified Chinese.
 *主旨*
 summary
 *观点*
