@@ -752,11 +752,7 @@ summary
 
 *问题*
 *Q1： question1*
-*A1：* answer1
-*Q2： question2*
-*A2：* answer2
-*Q3： question3*
-*A3：* answer3
+A1： answer1
 """
 
             print("Sending request to OpenAI API")
