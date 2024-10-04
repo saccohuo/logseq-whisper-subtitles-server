@@ -739,14 +739,24 @@ def summarize_text(text, api_setting_priority, **kwargs):
             prompt = f"""Help me to do the following things to a video, transcript delimited by XML tag <transcript>.
 1. Summary part: extract the main idea of the video with the following template.
 2. Highlight part: use 3 to 5 brief bullet points to extract the video, and choose an appropriate emoji for each bullet point with the following template.
+3. Question part: ask 3 to 5 questions based on the video content with the following template.
 
 The transcript is <transcript>{text}</transcript>.
 
 Provide the output with the following template with Simplified Chinese.
+
 *主旨*
 summary
 *观点*
 - [Emoji] bulletpoints
+
+*问题*
+*Q1： question1*
+*A1：* answer1
+*Q2： question2*
+*A2：* answer2
+*Q3： question3*
+*A3：* answer3
 """
 
             print("Sending request to OpenAI API")
