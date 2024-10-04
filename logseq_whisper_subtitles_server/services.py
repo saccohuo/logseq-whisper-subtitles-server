@@ -269,6 +269,10 @@ def segment_text_with_openai(text, **kwargs):
     valid_settings = list(zip(range(1, len(kwargs.get('api_keys')) + 1), kwargs.get('api_keys'), kwargs.get('models'), kwargs.get('api_endpoints')))
     api_settings = sorted(valid_settings, key=lambda x: priority_map.get(x[0], len(kwargs.get('priority'))))
     
+    # 如果没有启用轮询，只保留优先级最高的设置
+    if not kwargs.get('enable_rotation'):
+        api_settings = api_settings[:1]
+    
     print(f"Sorted API settings: {api_settings}")
 
     # 根据是否启用轮询来决定使用哪个长度进行分割
@@ -320,7 +324,7 @@ def segment_text_with_openai(text, **kwargs):
             1. 保持原文的所有内容，绝对不要删除、增加或修改任何文字。
             2. 只在自然的句子边界进行分段。
             3. 确保每个段落的意思是完整的。
-            4. 每个段落的字数一般应在50~150字，有特殊情况也可以根据情况动态调整。
+            4. 每个段落的字数一般应在50~200字，有特殊情况也可以根据情况动态调整。
             5. 直接返回分段后的文本，每个段落用一个换行符分隔。
             6. 不要添加任何额外的解释、编号或标记。
             7. 分段前后的标点符号可以不同，但文字必须完全一致，不允许有任何差异。
@@ -333,52 +337,59 @@ def segment_text_with_openai(text, **kwargs):
 
             success = False
             priority_letter = priority_letters[attempt - 1]
-            print(f"Attempt {attempt}: Sending request to OpenAI API (Priority: {priority_letter}, OpenAI Setting: {setting_number}, Endpoint: {api_endpoint}, Model: {model})")
             
-            try:
-                client = OpenAI(api_key=api_key, base_url=api_endpoint)
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "You are a text segmentation assistant. Only return the segmented text without any additional information."},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                print(f"Received response from OpenAI API using model: {model}")
-                segmented_chunk = response.choices[0].message.content.strip()
-                print(f"Segmented chunk: {segmented_chunk}")
+            for retry in range(3):  # 最多重试3次
+                print(f"Attempt {attempt}, Retry {retry + 1}: Sending request to OpenAI API (Priority: {priority_letter}, OpenAI Setting: {setting_number}, Endpoint: {api_endpoint}, Model: {model})")
                 
-                processed_segments = process_segments_with_timestamps(segmented_chunk,latest_segment_last_timestamp)
-                
-                print(f"Segmented chunk text: {processed_segments}")
-                
-                original_text_no_punct = clean_text(chunk)
-                segmented_text_no_punct = clean_text(''.join([seg["text"] for seg in processed_segments]))
-                
-                is_acceptable, difference = is_segmentation_acceptable(original_text_no_punct, segmented_text_no_punct, kwargs.get('segmentation_tolerance'), kwargs.get('segmentation_tolerance_unit'))
-                
-                if is_acceptable:
-                    print(f"Chunk {i}: Segmentation successful, within tolerance")
-                    print(f"Difference: {difference} {'%' if kwargs.get('segmentation_tolerance_unit') == 'percent' else 'characters'}")
-                    segmented_chunks.extend(processed_segments)
-                    success = True
-                    rotation_message = f"Using OpenAI API setting {setting_number} (Priority {priority_letter}) with model {model}"
-                    break
-                else:
-                    print(f"Chunk {i}: Warning - Segmented text difference exceeds tolerance")
-                    print(f"Difference: {difference} {'%' if kwargs.get('segmentation_tolerance_unit') == 'percent' else 'characters'}")
-                    if not kwargs.get('enable_rotation'):
-                        break
-                    print("Rotation enabled, trying next API setting")
-            except Exception as e:
-                print(f"Chunk {i}, Attempt {attempt}: OpenAI API 调用失败 (Priority: {priority_letter}, OpenAI Setting: {setting_number}, Endpoint: {api_endpoint}, Model: {model}): {str(e)}")
-                if not kwargs.get('enable_rotation'):
-                    break
-                print("Rotation enabled, trying next API setting")
+                try:
+                    client = OpenAI(api_key=api_key, base_url=api_endpoint)
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": "You are a text segmentation assistant. Only return the segmented text without any additional information."},
+                            {"role": "user", "content": prompt}
+                        ]
+                    )
+                    print(f"Received response from OpenAI API using model: {model}")
+                    segmented_chunk = response.choices[0].message.content.strip()
+                    print(f"Segmented chunk: {segmented_chunk}")
+                    
+                    processed_segments = process_segments_with_timestamps(segmented_chunk, latest_segment_last_timestamp)
+                    
+                    print(f"Segmented chunk text: {processed_segments}")
+                    
+                    original_text_no_punct = clean_text(chunk)
+                    segmented_text_no_punct = clean_text(''.join([seg["text"] for seg in processed_segments]))
+                    
+                    is_acceptable, difference = is_segmentation_acceptable(original_text_no_punct, segmented_text_no_punct, kwargs.get('segmentation_tolerance'), kwargs.get('segmentation_tolerance_unit'))
+                    
+                    if is_acceptable:
+                        print(f"Chunk {i}: Segmentation successful, within tolerance")
+                        print(f"Difference: {difference} {'%' if kwargs.get('segmentation_tolerance_unit') == 'percent' else 'characters'}")
+                        segmented_chunks.extend(processed_segments)
+                        success = True
+                        rotation_message = f"Using OpenAI API setting {setting_number} (Priority {priority_letter}) with model {model}"
+                        break  # 成功后跳出重试循环
+                    else:
+                        print(f"Chunk {i}: Warning - Segmented text difference exceeds tolerance")
+                        print(f"Difference: {difference} {'%' if kwargs.get('segmentation_tolerance_unit') == 'percent' else 'characters'}")
+                        if retry == 2:  # 如果是最后一次重试
+                            print("All retries failed, using original chunk.")
+                            segmented_chunks.extend(process_segments_with_timestamps(chunk, latest_segment_last_timestamp))
+                            success = True  # 标记为成功，以跳过其他 API 设置
+                except Exception as e:
+                    print(f"Chunk {i}, Attempt {attempt}, Retry {retry + 1}: OpenAI API 调用失败 (Priority: {priority_letter}, OpenAI Setting: {setting_number}, Endpoint: {api_endpoint}, Model: {model}): {str(e)}")
+                    if retry == 2:  # 如果是最后一次重试
+                        print("All retries failed, using original chunk.")
+                        segmented_chunks.extend(process_segments_with_timestamps(chunk, latest_segment_last_timestamp))
+                        success = True  # 标记为成功，以跳过其他 API 设置
+            
+            if success:
+                break  # 如果成功，跳出 API 设置循环
 
         if not success:
             print(f"All API calls failed or exceeded tolerance for chunk {i}/{total_chunks}. Using original chunk.")
-            segmented_chunks.extend(process_segments_with_timestamps(chunk,latest_segment_last_timestamp))
+            segmented_chunks.extend(process_segments_with_timestamps(chunk, latest_segment_last_timestamp))
         
         latest_segment_last_timestamp = segmented_chunks[-1]['start']
 
@@ -703,3 +714,61 @@ def process_segments_with_timestamps(text,latest_segment_last_timestamp):
             result[0]["start"] = latest_segment_last_timestamp
     
     return result
+
+def summarize_text(text, api_setting_priority, **kwargs):
+    print(f"Summarizing text using API setting priority: {api_setting_priority}")
+    
+    api_settings = []
+    for i, priority in enumerate(api_setting_priority.split(','), 1):
+        api_settings.append({
+            'priority': int(priority),
+            'api_key': kwargs['api_keys'][i-1],
+            'api_model': kwargs['models'][i-1],
+            'api_endpoint': kwargs['api_endpoints'][i-1]
+        })
+    
+    # 按优先级排序
+    api_settings.sort(key=lambda x: x['priority'])
+
+    for setting in api_settings:
+        try:
+            client = OpenAI(api_key=setting['api_key'], base_url=setting['api_endpoint'])
+            print(f"Attempting with API endpoint: {setting['api_endpoint']}")
+            print(f"Using API model: {setting['api_model']}")
+
+            prompt = f"""Help me to do the following things to a video, transcript delimited by XML tag <transcript>.
+1. Summary part: extract the main idea of the video with the following template.
+2. Highlight part: use 3 to 5 brief bullet points to extract the video, and choose an appropriate emoji for each bullet point with the following template.
+
+The transcript is <transcript>{text}</transcript>.
+
+Provide the output with the following template with Chinese.
+*主旨*
+summary
+*观点*
+- [Emoji] bulletpoints
+"""
+
+            print("Sending request to OpenAI API")
+            response = client.chat.completions.create(
+                model=setting['api_model'],
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that summarizes videos."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=1000
+            )
+            print("Received response from OpenAI API")
+            
+            summary = response.choices[0].message.content.strip()
+            if summary == "PROHIBITED_CONTENT":
+                print(f"PROHIBITED_CONTENT error with API setting {setting['priority']}, trying next setting")
+                continue
+            
+            print(f"Generated summary: {summary}")
+            return summary
+        except Exception as e:
+            print(f"Error with API setting {setting['priority']}: {str(e)}")
+            continue
+
+    raise ValueError("All API settings failed to generate a summary")

@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from services import transcribe_audio, download_video, extract_audio_from_local_video, is_audio_file, FUNASR_MODELS, get_ollama_models, preload_models, convert_subtitle_to_transcription, segment_text_with_openai, segment_text_with_ollama, segment_text, process_segments_with_timestamps
+from services import transcribe_audio, download_video, extract_audio_from_local_video, is_audio_file, FUNASR_MODELS, get_ollama_models, preload_models, convert_subtitle_to_transcription, segment_text_with_openai, segment_text_with_ollama, segment_text, process_segments_with_timestamps, summarize_text
 
 import re
 import os
@@ -233,6 +233,27 @@ def extract_subtitle_file_path(content):
         return markdown_link_match.group(2)
 
     return None
+
+@app.route('/summarize', methods=['POST'])
+def summarize():
+    print(f"Begin summarize")
+    try:
+        text = request.form.get('text')
+        api_setting_priority = request.form.get('api_setting_priority', '1,2,3,4,5')
+        print(f"Received text: {text}")
+        print(f"Received api_setting_priority: {api_setting_priority}")
+        
+        if not text:
+            return jsonify({"error": "No text provided for summarization"}), 400
+
+        segmentation_params = extract_segmentation_params(request.form)
+        print(f"Segmentation Params: {segmentation_params}")
+        summary = summarize_text(text, api_setting_priority, **segmentation_params)
+        return jsonify({"summary": summary})
+    except Exception as e:
+        print(f"Error in summarize function: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": f"Summarization error: {str(e)}"}), 500
 
 # 在服务器启动之前加载模型
 # preload_models()
