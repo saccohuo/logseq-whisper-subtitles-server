@@ -1,10 +1,46 @@
 from flask import Flask, request, jsonify
-from services import transcribe_audio, download_video, extract_audio_from_local_video, is_audio_file, FUNASR_MODELS, get_ollama_models, preload_funasr_models
+from services import transcribe_audio, download_video, extract_audio_from_local_video, is_audio_file, FUNASR_MODELS, get_ollama_models, preload_models, convert_subtitle_to_transcription, segment_text_with_openai, segment_text_with_ollama, segment_text, process_segments_with_timestamps
+
 import re
 import os
 import traceback
+import json
 
 app = Flask(__name__)
+
+def extract_segmentation_params(request_form):
+    segmentation_params = {
+        'max_length': int(request_form.get('max_length', 1500)),
+        'max_segment_lengths': [int(request_form.get(f'openai_max_segment_length{i}', 0)) for i in range(1, 6)],
+        'api_keys': [request_form.get(f'openai_api_key{i}', '') for i in range(1, 6)],
+        'models': [request_form.get(f'openai_models{i}', '') for i in range(1, 6)],
+        'api_endpoints': [request_form.get(f'openai_api_endpoint{i}', '') for i in range(1, 6)],
+        'priority': request_form.get('openai_priority', '1,2,3,4,5').split(','),
+        'enable_rotation': request_form.get('enable_openai_rotation', 'false').lower() == 'true',
+        'segmentation_tolerance': float(request_form.get('segmentation_tolerance', 5)),
+        'segmentation_tolerance_unit': request_form.get('segmentation_tolerance_unit', 'percent'),
+        'ollama_model': request_form.get('ollama_model', 'qwen2.5:3b'),
+        'ollama_endpoint': request_form.get('ollama_endpoint', 'http://localhost:11434'),
+        'hotwords': request_form.get('hotwords', ''),  # 添加hotwords
+    }
+    
+    print(f"OpenAI Models(extract_segmentation_params): {segmentation_params['models']}")
+    print(f"api_keys(extract_segmentation_params): {segmentation_params['api_keys']}")
+    print(f"api_endpoints(extract_segmentation_params): {segmentation_params['api_endpoints']}")
+    print(f"Hotwords(extract_segmentation_params): {segmentation_params['hotwords']}")  # 打印hotwords
+
+    # 处理共享的 OpenAI API 设置
+    use_shared_openai_api_key = request_form.get('use_shared_openai_api_key', 'false').lower() == 'true'
+    shared_openai_api_key = request_form.get('shared_openai_api_key', '')
+    use_shared_openai_api_endpoint = request_form.get('use_shared_openai_api_endpoint', 'false').lower() == 'true'
+    shared_openai_api_endpoint = request_form.get('shared_openai_api_endpoint', '')
+
+    if use_shared_openai_api_key:
+        segmentation_params['api_keys'] = [shared_openai_api_key] * 5
+    if use_shared_openai_api_endpoint:
+        segmentation_params['api_endpoints'] = [shared_openai_api_endpoint] * 5
+
+    return segmentation_params
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
@@ -12,132 +48,96 @@ def transcribe():
         print("Received transcribe request")
         print(f"Request form data: {request.form}")
         
-        text = request.form['text'].strip()
-        min_length = request.form.get('min_length', '')
         model_type = request.form.get('model_type', 'whisper')
-        model_size = request.form.get('model_size', '') if model_type == 'whisper' else None
-        graph_path = request.form.get('graph_path', '')
-        zh_type = request.form.get('zh_type', 'zh-cn')
-        funasr_model_name = request.form.get('funasr_model_name')
-        funasr_model_source = request.form.get('funasr_model_source', 'modelscope')
-        ollama_model = request.form.get('ollama_model', 'qwen2.5:3b')
-        ollama_endpoint = request.form.get('ollama_endpoint', 'http://localhost:11434')
-        segment_model = request.form.get('segment_model', 'ollama')
-        enable_openai_rotation = request.form.get('enable_openai_rotation', 'false').lower() == 'true'
-        use_shared_openai_api_key = request.form.get('use_shared_openai_api_key', 'false').lower() == 'true'
-        use_shared_openai_api_endpoint = request.form.get('use_shared_openai_api_endpoint', 'false').lower() == 'true'
+        if model_type not in ['whisper', 'funasr']:
+            raise ValueError(f"Unsupported model type: {model_type}")
+        
         perform_segmentation = request.form.get('perform_segmentation', 'false').lower() == 'true'
-        max_segment_length = int(request.form.get('max_segment_length', 1500))
-        segmentation_tolerance = float(request.form.get('segmentation_tolerance', 5))
-        segmentation_tolerance_unit = request.form.get('segmentation_tolerance_unit', 'percent')
-        hotword_file_path = request.form.get('hotword_file_path', '')
-        hotwords = request.form.get('hotwords', '')
-
-        openai_api_keys = []
-        openai_models = []
-        openai_api_endpoints = []
+        print(f"Perform Segmentation: {perform_segmentation}")
+        segment_model = request.form.get('segment_model', 'ollama')
         
-        if use_shared_openai_api_key:
-            shared_api_key = request.form.get('shared_openai_api_key', '')
-            if shared_api_key:
-                openai_api_keys = [shared_api_key] * 5
+        segmentation_params = extract_segmentation_params(request.form)
+        
+        print(f"Max Length: {segmentation_params['max_length']}")
+        print(f"Max Segment Lengths: {segmentation_params['max_segment_lengths']}")
+        print(f"OpenAI Models: {segmentation_params['models']}")
+        print(f"OpenAI API Endpoints: {segmentation_params['api_endpoints']}")
+        print(f"OpenAI Priority: {segmentation_params['priority']}")
+        print(f"Enable OpenAI Rotation: {segmentation_params['enable_rotation']}")
+        print(f"Segmentation Tolerance: {segmentation_params['segmentation_tolerance']}")
+        print(f"Segmentation Tolerance Unit: {segmentation_params['segmentation_tolerance_unit']}")
+        print(f"Ollama Model: {segmentation_params['ollama_model']}")
+        print(f"Ollama Endpoint: {segmentation_params['ollama_endpoint']}")
+        print(f"Segment Model: {segment_model}")
+        print(f"Hotwords: {segmentation_params['hotwords']}")  # 打印hotwords
+
+        text = request.form.get('text', '')
+        print(f"Received text: {text}")
+
+        result = []
+        rotation_message = None
+        source = 'unknown'
+
+        # 检查是否是字幕文件
+        is_subtitle = re.search(r'\.(srt|ass|vtt)(\]\]|\))', text, re.IGNORECASE) is not None
+        print(f"Is Subtitle: {is_subtitle}")
+
+        if is_subtitle:
+            # 处理字幕文件的情况
+            try:
+                subtitle_path = extract_subtitle_file_path(text)
+                print(f"Subtitle Path: {subtitle_path}")
+                if not subtitle_path:
+                    raise ValueError("No subtitle file path found in the block content")
+                
+                subtitle_content = convert_subtitle_to_transcription(subtitle_path)
+                print(f"Subtitle Content: {subtitle_content}")
+                text = '\n'.join([f"{{{{timestamp {seg['start']}}}}} {seg['text']}" for seg in subtitle_content['segments']])
+                source = 'subtitle'
+            except json.JSONDecodeError:
+                # 如果不是 JSON，假设它已经是正确格式的文本
+                source = 'unknown'
+            
+            print(f"Processed subtitle text: {text}")  # 添加这行来打印处理后的文本
+            
+            result, rotation_message = process_and_segment_text(text, perform_segmentation, segment_model, segmentation_params)
         else:
-            openai_api_keys = [request.form.get(f'openai_api_key{i}', '') for i in range(1, 6)]
-        
-        if use_shared_openai_api_endpoint:
-            shared_api_endpoint = request.form.get('shared_openai_api_endpoint', 'https://api.openai.com/v1')
-            openai_api_endpoints = [shared_api_endpoint] * 5
-        else:
-            openai_api_endpoints = [request.form.get(f'openai_api_endpoint{i}', 'https://api.openai.com/v1') for i in range(1, 6)]
-        
-        # 修改这里，确保使用客户端提供的模型名称
-        openai_models = [request.form.get(f'openai_model{i}', '') for i in range(1, 6)]
-        
-        openai_priority = request.form.get('openai_priority', '1,2,3,4,5').split(',')
+            # 处理其他情况（YouTube、Bilibili、本地文件等）
+            youtube_match = re.search(r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+', text)
+            bilibili_match = re.search(r'https?://(?:www\.)?bilibili\.com/video/[\w-]+', text)
+            local_file_match = re.search(r'([^\s]+\.(?:mp4|avi|mov|mkv|flv|wmv|mp3|wav|m4a|flac|ogg))', text, re.IGNORECASE)
 
-        print(f"OpenAI API Keys: {openai_api_keys}")
-        print(f"OpenAI Models: {openai_models}")
-        print(f"OpenAI API Endpoints: {openai_api_endpoints}")
-        print(f"OpenAI Priority: {openai_priority}")
-        print(f"Enable OpenAI Rotation: {enable_openai_rotation}")
-
-        default_max_segment_length = int(request.form.get('default_max_segment_length', 1500))
-        ollama_max_segment_length = int(request.form.get('ollama_max_segment_length', 0))
-        openai_max_segment_lengths = [int(request.form.get(f'openai_max_segment_length{i}', 0)) for i in range(1, 6)]
-
-        print(f"OpenAI max segment lengths: {openai_max_segment_lengths}")  # 添加这行
-
-        source = None
-        audio_path = None
-        youtube_pattern = r"https://www\.youtube\.com/watch\?v=[a-zA-Z0-9_-]+|https://youtu\.be/[a-zA-Z0-9_-]+"
-        bilibili_pattern = r"https://www\.bilibili\.com/video/[a-zA-Z0-9_-]+"
-        youtube_match = re.search(youtube_pattern, text)
-        bilibili_match = re.search(bilibili_pattern, text)
-
-        local_file_pattern = r'(!\[.*?\]\((.*?)\))|(\{\{renderer :[a-zA-Z]+, (.*?)\}\})|\[\[(.*?)\]\[.*?\]\]'
-        local_file_match = re.search(local_file_pattern, text)
-
-        if youtube_match or bilibili_match:
-            video_url = youtube_match.group() if youtube_match else bilibili_match.group()
-            audio_path = download_video(video_url)
-            source = "youtube" if youtube_match else "bilibili"
-        elif local_file_match:
-            if local_file_match.group(2) is not None:
-                local_file_path = local_file_match.group(2)
-            elif local_file_match.group(4) is not None:
-                local_file_path = local_file_match.group(4)
-            elif local_file_match.group(5) is not None:
-                local_file_path = local_file_match.group(5)
+            if youtube_match or bilibili_match:
+                video_url = youtube_match.group() if youtube_match else bilibili_match.group()
+                print(f"Detected video URL: {video_url}")
+                audio_path = download_video(video_url)
+                source = "youtube" if youtube_match else "bilibili"
+                result, rotation_message = transcribe_audio(
+                    audio_path, 
+                    model_type=model_type,
+                    segment_model=segment_model,
+                    perform_segmentation=perform_segmentation,
+                    **segmentation_params
+                )
+            elif local_file_match:
+                local_path = local_file_match.group(1)
+                print(f"Detected local file: {local_path}")
+                if is_audio_file(local_path):
+                    audio_path = local_path
+                else:
+                    audio_path = extract_audio_from_local_video(local_path)
+                source = "local"
+                result, rotation_message = transcribe_audio(
+                    audio_path, 
+                    model_type=model_type,
+                    segment_model=segment_model,
+                    perform_segmentation=perform_segmentation,
+                    **segmentation_params
+                )
             else:
-                return jsonify({
-                    "source": "",
-                    "segments": [],
-                    "error": "No local file path found"
-                })
+                print("No valid video URL or local file detected. Processing as plain text.")
+                result, rotation_message = process_and_segment_text(text, perform_segmentation, segment_model, segmentation_params)
 
-            if local_file_path.startswith("http") or local_file_path.startswith("https"):
-                print("This is a URL, not a local file")
-                return jsonify({
-                    "source": "",
-                    "segments": [],
-                    "error": "This is a URL, not a local file"
-                })
-
-            source = "local"
-            if local_file_path.startswith("../"):
-                local_file_path = os.path.join(graph_path, local_file_path[3:])
-
-            audio_path = local_file_path
-            if not is_audio_file(local_file_path):
-                audio_path = extract_audio_from_local_video(local_file_path)
-            print(f"Extracted file path: {local_file_path}")
-        else:
-            # 处理直接文本输入
-            source = "text"
-            audio_path = "text_input.txt"
-            with open(audio_path, "w", encoding="utf-8") as f:
-                f.write(text)
-
-        # 直接执行转录
-        result, rotation_message = transcribe_audio(audio_path, min_length, model_type, model_size, zh_type, 
-                                  funasr_model_name, funasr_model_source, 
-                                  segment_model=segment_model,
-                                  ollama_model=ollama_model, 
-                                  ollama_endpoint=ollama_endpoint,
-                                  openai_api_keys=openai_api_keys,
-                                  openai_models=openai_models,
-                                  openai_api_endpoints=openai_api_endpoints,
-                                  openai_priority=openai_priority,
-                                  enable_openai_rotation=enable_openai_rotation,
-                                  perform_segmentation=perform_segmentation,
-                                  default_max_segment_length=default_max_segment_length,
-                                  ollama_max_segment_length=ollama_max_segment_length,
-                                  openai_max_segment_lengths=openai_max_segment_lengths,
-                                  segmentation_tolerance=segmentation_tolerance,
-                                  segmentation_tolerance_unit=segmentation_tolerance_unit,
-                                  hotword_file_path=hotword_file_path,
-                                  hotwords=hotwords)
-        
         print(f"Transcription result: {result}")
         print(f"Rotation message: {rotation_message}")
 
@@ -161,6 +161,26 @@ def transcribe():
             "segments": []
         })
 
+def process_and_segment_text(text, perform_segmentation_flag, segment_model, segmentation_params):
+    if perform_segmentation_flag:
+        return segment_text(text, segment_model, segmentation_params)
+    else:
+        return process_segments_with_timestamps(text,0), None
+
+@app.route('/segment', methods=['POST'])
+def segment_text_route():
+    try:
+        text = request.form.get('text')
+        segment_model = request.form.get('segment_model', 'ollama')
+        segmentation_params = extract_segmentation_params(request.form)
+        
+        segments, _ = segment_text(text, segment_model, segmentation_params)
+        print(f"Segments: {segments}")
+        return jsonify({"segments": segments})
+    except Exception as e:
+        print(f"Error in segment_text: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/funasr_models', methods=['GET'])
 def get_funasr_models():
     """Get available FunASR models"""
@@ -173,8 +193,49 @@ def get_available_ollama_models():
     models = get_ollama_models(ollama_endpoint)
     return jsonify(models)
 
+@app.route('/convert_subtitle', methods=['POST'])
+def convert_subtitle():
+    try:
+        subtitle_path = request.form.get('subtitle_path')
+        print(f"Received subtitle path: {subtitle_path}")
+        if not subtitle_path:
+            return jsonify({"error": "No subtitle file path provided"}), 400
+
+        # 获取 Logseq 图谱路径
+        graph_path = request.form.get('graph_path', '')
+        
+        # 如果是相对路径，将其转换为绝对路径
+        if subtitle_path.startswith('../'):
+            subtitle_path = os.path.join(graph_path, subtitle_path[3:])
+        elif not os.path.isabs(subtitle_path):
+            subtitle_path = os.path.join(graph_path, subtitle_path)
+
+        print(f"Attempting to convert subtitle file: {subtitle_path}")
+
+        if not os.path.exists(subtitle_path):
+            return jsonify({"error": f"Subtitle file not found: {subtitle_path}"}), 404
+
+        result = convert_subtitle_to_transcription(subtitle_path)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in convert_subtitle: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+def extract_subtitle_file_path(content):
+    # 匹配 orgmode 链接格式
+    logseq_link_match = re.search(r'\[\[(.*?\.(?:srt|ass|vtt))\]\[.*?\]\]', content)
+    if logseq_link_match:
+        return logseq_link_match.group(1)
+
+    # 匹配普通的 Markdown 链接格式
+    markdown_link_match = re.search(r'\[(.*?)\]\((.*?\.(?:srt|ass|vtt))\)', content)
+    if markdown_link_match:
+        return markdown_link_match.group(2)
+
+    return None
+
 # 在服务器启动之前加载模型
-preload_funasr_models()
+# preload_models()
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False, port=5014)

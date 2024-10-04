@@ -6,3 +6,5 @@ addict
 huggingface_hub
 requests
 openai>=1.0.0
+pysrt
+ass
