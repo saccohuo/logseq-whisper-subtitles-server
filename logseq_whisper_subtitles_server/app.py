@@ -240,11 +240,31 @@ def summarize():
     try:
         text = request.form.get('text')
         api_setting_priority = request.form.get('api_setting_priority', '1,2,3,4,5')
+        graph_path = request.form.get('graph_path', '')
         print(f"Received text: {text}")
         print(f"Received api_setting_priority: {api_setting_priority}")
+        print(f"Received graph_path: {graph_path}")
         
         if not text:
             return jsonify({"error": "No text provided for summarization"}), 400
+
+        # 检查是否是字幕文件
+        subtitle_path = extract_subtitle_file_path(text)
+        if subtitle_path:
+            print(f"Detected subtitle file: {subtitle_path}")
+            # 如果是相对路径，将其转换为绝对路径
+            if subtitle_path.startswith('../'):
+                subtitle_path = os.path.join(graph_path, subtitle_path[3:])
+            elif not os.path.isabs(subtitle_path):
+                subtitle_path = os.path.join(graph_path, subtitle_path)
+
+            print(f"Full subtitle path: {subtitle_path}")
+            if not os.path.exists(subtitle_path):
+                return jsonify({"error": f"Subtitle file not found: {subtitle_path}"}), 404
+
+            subtitle_content = convert_subtitle_to_transcription(subtitle_path)
+            text = '\n'.join([f"{{{{timestamp {seg['start']}}}}} {seg['text']}" for seg in subtitle_content['segments']])
+            print(f"Converted subtitle to text, length: {len(text)}")
 
         segmentation_params = extract_segmentation_params(request.form)
         print(f"Segmentation Params: {segmentation_params}")

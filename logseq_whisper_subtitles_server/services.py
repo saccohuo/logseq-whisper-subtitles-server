@@ -745,12 +745,15 @@ The transcript is <transcript>{text}</transcript>.
 
 Provide the output with the following template with Simplified Chinese.
 
-*主旨*
+*【主旨】*
 summary
-*观点*
+
+
+*【观点】*
 - [Emoji] bulletpoints
 
-*问题*
+
+*【问题】*
 *Q1： question1*
 A1： answer1
 """
