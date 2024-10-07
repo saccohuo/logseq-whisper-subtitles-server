@@ -171,8 +171,13 @@ def process_and_segment_text(text, perform_segmentation_flag, segment_model, seg
 def segment_text_route():
     try:
         text = request.form.get('text')
+        print(f"Received text: {text}")
         segment_model = request.form.get('segment_model', 'ollama')
         segmentation_params = extract_segmentation_params(request.form)
+        
+        # 确保文本包含时间戳
+        if not re.search(r'\{\{timestamp \d+\}\}', text):
+            raise ValueError("Text does not contain timestamps")
         
         segments, _ = segment_text(text, segment_model, segmentation_params)
         print(f"Segments: {segments}")
