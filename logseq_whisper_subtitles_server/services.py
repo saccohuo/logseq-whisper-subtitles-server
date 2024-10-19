@@ -717,19 +717,22 @@ def process_segments_with_timestamps(text,latest_segment_last_timestamp):
 
 def summarize_text(text, api_setting_priority, **kwargs):
     print(f"Summarizing text using API setting priority: {api_setting_priority}")
+    print(f"Text to summarize: {text[:500]}...")  # 打印前500个字符
     
     api_settings = []
-    for i, priority in enumerate(api_setting_priority.split(','), 1):
-        api_settings.append({
-            'priority': int(priority),
-            'api_key': kwargs['api_keys'][i-1],
-            'api_model': kwargs['models'][i-1],
-            'api_endpoint': kwargs['api_endpoints'][i-1]
-        })
+    priority_list = [int(p) for p in api_setting_priority.split(',')]
+    for priority in priority_list:
+        index = priority - 1  # 将优先级转换为索引
+        if 0 <= index < 5:  # 确保索引在有效范围内
+            api_settings.append({
+                'priority': priority,
+                'api_key': kwargs['api_keys'][index],
+                'api_model': kwargs['models'][index],
+                'api_endpoint': kwargs['api_endpoints'][index]
+            })
     
-    # 按优先级排序
-    api_settings.sort(key=lambda x: x['priority'])
-
+    print(f"API settings (sorted by priority): {api_settings}")
+    
     for setting in api_settings:
         try:
             client = OpenAI(api_key=setting['api_key'], base_url=setting['api_endpoint'])
