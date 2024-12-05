@@ -105,7 +105,7 @@ def transcribe():
             # 处理其他情况（YouTube、Bilibili、本地文件等）
             youtube_match = re.search(r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+', text)
             bilibili_match = re.search(r'https?://(?:www\.)?bilibili\.com/video/[\w-]+', text)
-            local_file_match = re.search(r'([^\s]+\.(?:mp4|avi|mov|mkv|flv|wmv|mp3|wav|m4a|flac|ogg))', text, re.IGNORECASE)
+            local_file_match = re.search(r'\[\[([^]]+\.(?:mp4|avi|mov|mkv|flv|wmv|mp3|wav|m4a|flac|ogg))\]\[.*?\]\]|\[.*?\]\(([^)]+\.(?:mp4|avi|mov|mkv|flv|wmv|mp3|wav|m4a|flac|ogg))\)', text, re.IGNORECASE)
 
             if youtube_match or bilibili_match:
                 video_url = youtube_match.group() if youtube_match else bilibili_match.group()
@@ -120,8 +120,25 @@ def transcribe():
                     **segmentation_params
                 )
             elif local_file_match:
-                local_path = local_file_match.group(1)
+                # 获取 Logseq 图谱路径
+                graph_path = request.form.get('graph_path', '')
+                print(f"Graph path: {graph_path}")
+
+                # 从匹配中获取文件路径（支持两种格式）
+                local_path = local_file_match.group(1) or local_file_match.group(2)
                 print(f"Detected local file: {local_path}")
+
+                # 处理相对路径
+                if local_path.startswith('../'):
+                    local_path = os.path.join(graph_path, local_path[3:])
+                elif not os.path.isabs(local_path):
+                    local_path = os.path.join(graph_path, local_path)
+
+                print(f"Full local path: {local_path}")
+                
+                if not os.path.exists(local_path):
+                    raise FileNotFoundError(f"Local file not found: {local_path}")
+
                 if is_audio_file(local_path):
                     audio_path = local_path
                 else:
