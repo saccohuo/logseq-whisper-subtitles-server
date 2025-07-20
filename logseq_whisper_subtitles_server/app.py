@@ -103,7 +103,7 @@ def transcribe():
             result, rotation_message = process_and_segment_text(text, perform_segmentation, segment_model, segmentation_params)
         else:
             # 处理其他情况（YouTube、Bilibili、本地文件等）
-            youtube_match = re.search(r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+', text)
+            youtube_match = re.search(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w-]+', text)
             bilibili_match = re.search(r'https?://(?:www\.)?bilibili\.com/video/[\w-]+', text)
             local_file_match = re.search(r'\[\[([^]]+\.(?:mp4|avi|mov|mkv|flv|wmv|mp3|wav|m4a|flac|ogg))\]\[.*?\]\]|\[.*?\]\(([^)]+\.(?:mp4|avi|mov|mkv|flv|wmv|mp3|wav|m4a|flac|ogg))\)', text, re.IGNORECASE)
 
